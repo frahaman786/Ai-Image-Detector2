@@ -1,4 +1,8 @@
 import React, { useState, useEffect } from 'react';
+// LangChain imports (replace raw fetch() calls to the Gemini REST API)
+// npm install @langchain/google-genai @langchain/core
+import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
+import { HumanMessage } from "@langchain/core/messages";
 
 // Main App Component
 function App() {
@@ -146,17 +150,17 @@ function DetectorPage() {
     }
   };
 
-  // Convert image to base64 for API
-  const getBase64 = (file) => {
+  // Convert image to a full base64 data URL (needed for LangChain's image_url content block)
+  const getBase64DataUrl = (file) => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.readAsDataURL(file);
-      reader.onload = () => resolve(reader.result.split(',')[1]); // Get base64 string after 'data:image/jpeg;base64,'
+      reader.onload = () => resolve(reader.result); // keep full "data:<mime>;base64,...." string
       reader.onerror = (error) => reject(error);
     });
   };
 
-  // Simulate API call to Gemini for image understanding
+  // Analyze image using LangChain's ChatGoogleGenerativeAI (replaces the raw fetch() call)
   const analyzeImage = async () => {
     if (!selectedFile) {
       setError("Please select an image first.");
@@ -168,54 +172,40 @@ function DetectorPage() {
     setDetectionResult(null);
 
     try {
-      const base64ImageData = await getBase64(selectedFile);
-      // MODIFIED PROMPT: Asking for a more concise description
+      const imageDataUrl = await getBase64DataUrl(selectedFile);
+
       const prompt = "Briefly describe this image, focusing on its main content and style. Conclude with a very concise observation if it appears to be a real photograph or an AI-generated image, based on common characteristics, in no more than three sentences.";
 
-      let chatHistory = [];
-      chatHistory.push({ role: "user", parts: [{ text: prompt }] });
-
-      const payload = {
-        contents: [
-          {
-            role: "user",
-            parts: [
-              { text: prompt },
-              {
-                inlineData: {
-                  mimeType: selectedFile.type,
-                  data: base64ImageData,
-                },
-              },
-            ],
-          },
-        ],
-      };
-
       // The API key will be automatically provided by the Canvas environment
-      const apiKey = process.env.VITE_GEMINI_API_KEY;
-      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+      const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
 
-      const response = await fetch(apiUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+      const model = new ChatGoogleGenerativeAI({
+        apiKey: apiKey,
+        model: "gemini-2.5-flash",
       });
 
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(`API Error: ${response.status} - ${errorData.error.message || 'Unknown error'}`);
-      }
+      const message = new HumanMessage({
+        content: [
+          { type: "text", text: prompt },
+          {
+            type: "image_url",
+            image_url: imageDataUrl,
+          },
+        ],
+      });
 
-      const result = await response.json();
+      const response = await model.invoke([message]);
 
-      if (result.candidates && result.candidates.length > 0 &&
-          result.candidates[0].content && result.candidates[0].content.parts &&
-          result.candidates[0].content.parts.length > 0) {
-        const text = result.candidates[0].content.parts[0].text;
+      const text = typeof response.content === 'string'
+        ? response.content
+        : Array.isArray(response.content)
+          ? response.content.map((part) => (typeof part === 'string' ? part : part.text || '')).join('')
+          : '';
+
+      if (text) {
         setDetectionResult(text);
       } else {
-        setError("No detection result found. The API response was empty or malformed.");
+        setError("No detection result found. The model response was empty or malformed.");
       }
 
     } catch (err) {
